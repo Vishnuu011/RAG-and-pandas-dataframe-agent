@@ -1,0 +1,15 @@
+langchain 
+langchain-community 
+langchain-groq 
+python-dotenv 
+langchain-experimental
+langchain-chroma
+pypdf
+unstructured 
+python-docx
+docx2txt
+pandas
+matplotlib
+seaborn
+scipy
+sentence-transformers
