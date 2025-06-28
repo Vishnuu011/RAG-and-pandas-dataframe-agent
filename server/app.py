@@ -11,7 +11,7 @@ from langchain.agents.agent_types import AgentType
 from langchain_experimental.tools.python.tool import PythonAstREPLTool
 from langchain_groq import ChatGroq
 from langchain.prompts import (
-    PromptTemplate, 
+    ChatPromptTemplate, 
     MessagesPlaceholder
 )
 from typing import List, Optional
@@ -52,6 +52,7 @@ Initial creation of a RAG (Retrieval-Augmented Generation) pipeline for generati
 Data Science, Machine Learning, Deep Learning, Computer Vision, and Data Analysis.
 This pipeline uses RAG to enhance accuracy and context in responses.
 """
+
 
 class LoadUnstructuredDocxFile:
 
@@ -223,48 +224,42 @@ class ChrmoVectorDataBase:
             logger.error(f"Error Occured In {e}")    
 
 
-class TemporaryPromptTemplate:
+class RAGPromptTemplate:
 
     """
-    A class to define and return a custom prompt template for a retrieval-based assistant.
+    A class to define and return a RAG-style ChatPromptTemplate
+    for use in retrieval-augmented generation pipelines.
     """
+
 
     def __init__(self):
 
         """
-        Initializes the prompt template with placeholders for context and question.
+        Initializes the RAG-style chat prompt with system, human,
+        chat history, and agent scratchpad placeholders.
         """
         
-        self.prompt_template = """
-         You are a helpful assistant. Use the following context to answer the question.         
+        self.prompt_template = ChatPromptTemplate.from_messages([
+            ("system", 
+             "You are a RAG-powered data science and AI assistant. Use tools when needed to gather or compute information. "
+             "If the answer is not directly found, try to infer it. If nothing is relevant, say 'I couldn't find relevant information.'"),
+            ("human", "Context:\n{context}\n\nQuestion:\n{question}"),  
+        ])
 
-         If the answer is not directly found, try to infer it from the context.         
-
-         If nothing is relevant, say "I couldn't find relevant information."         
-
-         Context:
-         {context}         
-
-         Question: {question}
-         Answer:"""
-
-    def prompt_templates(self) -> Optional[PromptTemplate]:
+    def get_prompt_template(self) -> Optional[ChatPromptTemplate]:
 
         """
-        Builds and returns a LangChain PromptTemplate object.
+        Returns the constructed ChatPromptTemplate for RAG-style interactions.
 
         Returns:
-            Optional[PromptTemplate]: The compiled prompt template, or None if an error occurs.
+            Optional[ChatPromptTemplate]: The compiled prompt template, or None if an error occurs.
         """
 
         try:
-            PROMPT = PromptTemplate(
-                template=self.prompt_template,
-                input_variables=["context", "question"]
-            )
-            return PROMPT
+            return self.prompt_template
         except Exception as e:
-            logger.error(f"Error Occured In {e}")  
+            print(f"Error in RAGPromptTemplate: {e}")
+            return None
 
 
 
@@ -314,7 +309,7 @@ class DocumentDocxRetrievalQAPipeline:
                 ValueError("Vectore Store Not Created...")
 
 
-            self.PROMPT = TemporaryPromptTemplate().prompt_templates()
+            self.PROMPT = RAGPromptTemplate().get_prompt_template()
 
             if self.PROMPT is None:
                 ValueError("Prompt Template Not Created")
@@ -379,7 +374,7 @@ if __name__=='__main__':
     chain_type="stuff",
     search_kwargs={"k": 3},
     return_source_documents=True,
-    input_key="query"
+    input_key="question"
     )
     rag_chain = qa_pipeline.get_retrieval_QA()
     print("\nEnter queries about your PDFs (type 'exit' to quit)")
@@ -388,6 +383,6 @@ if __name__=='__main__':
         if query.lower() == "exit":
             break    
 
-        result = rag_chain.invoke({"query": query})
+        result = rag_chain.invoke({"question": query})
 
         print(f"\nAnswer: {result['result']}")
