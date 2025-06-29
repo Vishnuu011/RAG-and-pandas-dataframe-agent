@@ -65,6 +65,7 @@ class LoadUnstructuredDocxFile:
 
         self.dir_path : str = dir_path
         self.glob : str = "**/*.docx"
+        self.show_progress = True
 
     def Unstructured_Docx_FileLoader(self) -> List[Document] | None:
 
@@ -81,14 +82,23 @@ class LoadUnstructuredDocxFile:
             loader = DirectoryLoader(
                 path=self.dir_path,
                 glob=self.glob,
-                loader_cls=UnstructuredFileLoader
+                loader_cls=UnstructuredFileLoader,
+                show_progress=self.show_progress
             )
             documents = loader.load()
 
             logger.info("Exited from LoadUnstructuredDocxFile class....")
             return documents
         except Exception as e:
-            logger.error(f"Error Occured in : {e}")
+            logger.error(
+                "Failed to initialize Unstructured_Docx_FileLoader",
+                exc_info=True,
+                extra={
+                    "error_type" : type(e).__name__,
+                    "error_message" : str(e)
+                }
+            ) 
+            raise
 
 
 
@@ -111,7 +121,15 @@ class ApplyCharacterTextSplitter:
                 chunk_overlap =200
             )
         except Exception as e:
-            logger.error(f"Error Occured In : {e}")  
+            logger.error(
+                "Failed to initialize RecursiveCharacterTextSplitter",
+                exc_info=True,
+                extra={
+                    "error_type" : type(e).__name__,
+                    "error_message" : str(e)
+                }
+            ) 
+            raise
 
     def apply_text_spliter(self, documents: List[Document]) -> List[Document]:
 
@@ -132,7 +150,15 @@ class ApplyCharacterTextSplitter:
             logger.info("Exited From apply text spliter ....")
             return texts
         except Exception as e:
-            logger.error(f"Error Occured In : {e}") 
+            logger.error(
+                "Failed to initialize apply_text_splitter",
+                exc_info=True,
+                extra={
+                    "error_type" : type(e).__name__,
+                    "error_message" : str(e)
+                }
+            ) 
+            #raise
             return []              
 
 
@@ -167,8 +193,17 @@ class CreateVectorEmbeddings:
             )
             logger.info("Exited create Embedding...")
             return embeddings
+        
         except Exception as e:
-            logger.error(f"Error Occured In {e}")
+            logger.error(
+                "Failed to initialize Create_Embeddings",
+                exc_info=True,
+                extra={
+                    "error_type" : type(e).__name__,
+                    "error_message" : str(e)
+                }
+            ) 
+            raise
 
 
 
@@ -221,7 +256,16 @@ class ChrmoVectorDataBase:
             logger.info("Exited from update vector store ...")
             return vector_store
         except Exception as e:
-            logger.error(f"Error Occured In {e}")    
+            logger.error(
+                "Failed to initialize update_vector_store",
+                exc_info=True,
+                extra={
+                    "error_type" : type(e).__name__,
+                    "error_message" : str(e)
+                }
+            ) 
+            raise
+
 
 
 class RAGPromptTemplate:
@@ -320,8 +364,18 @@ class DocumentDocxRetrievalQAPipeline:
             self.search_kwargs = search_kwargs
             self.return_source_documents = return_source_documents
             self.input_key = input_key
+
         except Exception as e:
-            logger.error(f"Error Occured In : {e}")
+            logger.error(
+                "Failed to initialize DocumentDocxRetrievalQAPipeline",
+                exc_info=True,
+                extra={
+                    "error_type" : type(e).__name__,
+                    "error_message" : str(e)
+                }
+            ) 
+            raise
+
 
     def get_retrieval_QA(self) -> Optional[RetrievalQA]:
 
@@ -349,40 +403,76 @@ class DocumentDocxRetrievalQAPipeline:
             logger.info("Exited from get retrieval qa ...")
             return rag_chain
         except Exception as e:
-            logger.error(f"Error Occured In {e}")    
+            logger.error(
+                "Failed to initialize get_retrieval_QA",
+                exc_info=True,
+                extra={
+                    "error_type" : type(e).__name__,
+                    "error_message" : str(e)
+                }
+            ) 
+            raise
+        
 
 
-if __name__=='__main__':
+class CreateSharedMemoryBuffer:
 
-    documents = LoadUnstructuredDocxFile(
-        dir_path=r"C:\Users\Vishnu\Desktop\RAG_Agent\Data-Analysis-Agent\data"
-    ).Unstructured_Docx_FileLoader()
+    """
+    A class to create and manage a shared ConversationBufferMemory instance.
 
-    texts = ApplyCharacterTextSplitter().apply_text_spliter(
-        documents=documents
-    )
-    
-    embedding = CreateVectorEmbeddings().Create_Embeddings()
+    Attributes:
+        memory_key (str): The key used to store conversation memory.
+        return_messages (bool): Whether to return messages instead of string.
+        output_key (str): The key that corresponds to the output in memory.
+    """
 
-    qa_pipeline = DocumentDocxRetrievalQAPipeline(
-    text=texts,
-    embeddings=embedding,
-    persist_directory="chroma-store",
-    collection_name="ml_docs",
-    groq_model="llama-3.3-70b-versatile",
-    search_type="similarity",
-    chain_type="stuff",
-    search_kwargs={"k": 3},
-    return_source_documents=True,
-    input_key="question"
-    )
-    rag_chain = qa_pipeline.get_retrieval_QA()
-    print("\nEnter queries about your PDFs (type 'exit' to quit)")
-    while True:
-        query = input("\nEnter Your Query : ")
-        if query.lower() == "exit":
-            break    
+    def __init__(
+            self,
+            memory_key: str,
+            return_messages: bool,
+            output_key: str
+    ) -> None:
+        
+        """
+        Initializes the shared memory buffer configuration.
 
-        result = rag_chain.invoke({"question": query})
+        Args:
+            memory_key (str): Key for memory storage.
+            return_messages (bool): Flag to return messages or not.
+            output_key (str): Key for the memory output.
+        """
 
-        print(f"\nAnswer: {result['result']}")
+        self.memory_key = memory_key
+        self.return_messages = return_messages
+        self.output_key = output_key
+
+    def Conversation_Buffer_Memory(self) -> ConversationBufferMemory:
+
+        """
+        Creates and returns a ConversationBufferMemory instance based on configuration.
+
+        Returns:
+            ConversationBufferMemory: The memory instance for storing conversation history.
+
+        Raises:
+            Logs the error if creation fails.
+        """
+
+        try:
+            memory = ConversationBufferMemory(
+                memory_key=self.memory_key,
+                return_messages=self.return_messages,
+                output_key=self.output_key
+            )
+
+            return memory
+        except Exception as e:
+            logger.error(
+                "Failed to initialize ConversationBufferMemory",
+                exc_info=True,
+                extra={
+                    "error_type" : type(e).__name__,
+                    "error_message" : str(e)
+                }
+            )
+            raise
