@@ -3,7 +3,7 @@ import os, sys
 
 from langchain.agents import (
     AgentExecutor,
-    create_openai_tools_agent,
+    create_tool_calling_agent,
     Tool
 )
 
@@ -30,6 +30,8 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain.embeddings.base import Embeddings
 import logging
 from dotenv import load_dotenv
+import seaborn as sns 
+import matplotlib.pyplot as plt
 
 import warnings 
 warnings.filterwarnings('ignore')
@@ -61,13 +63,12 @@ class LoadUnstructuredDocxFile:
     using LangChain's DirectoryLoader and UnstructuredFileLoader.
     """
 
-    def __init__(self, dir_path: str):
-
-        self.dir_path : str = dir_path
+    def __init__(self):
         self.glob : str = "**/*.docx"
+
         self.show_progress = True
 
-    def Unstructured_Docx_FileLoader(self) -> List[Document] | None:
+    def Unstructured_Docx_FileLoader(self, dir_path: str) -> List[Document] | None:
 
         """
         Loads DOCX (or other unstructured) files from a directory using the UnstructuredFileLoader.
@@ -80,7 +81,7 @@ class LoadUnstructuredDocxFile:
             logger.info("Enter in Document Loader...")
 
             loader = DirectoryLoader(
-                path=self.dir_path,
+                path=dir_path,
                 glob=self.glob,
                 loader_cls=UnstructuredFileLoader,
                 show_progress=self.show_progress
@@ -412,7 +413,7 @@ class DocumentDocxRetrievalQAPipeline:
                 }
             ) 
             raise
-        
+
 
 
 class CreateSharedMemoryBuffer:
@@ -476,3 +477,207 @@ class CreateSharedMemoryBuffer:
                 }
             )
             raise
+
+class MultiAgentPromptTemplate:
+
+    """
+    Class to generate a reusable multi-agent system prompt template.
+    This template includes memory context, human input, and scratchpad for tool-based reasoning.
+    """
+
+    def __init__(self):
+
+        """
+        Initializes the multi-agent chat prompt with system instructions and message placeholders.
+        """
+
+        try:
+            self.prompt = ChatPromptTemplate.from_messages([
+                ("system", "You are a multi-agent assistant. Use RAGTool for document-based questions. \n"
+                "Use DataAnalysisTool for access to a pandas DataFrame, data analysis, data engineering and preprocessing and machine learning."),
+                MessagesPlaceholder(variable_name="chat_history"),
+                ("human", "{input}"),
+                MessagesPlaceholder(variable_name="agent_scratchpad")
+            ])
+        except Exception as e:
+            logger.error(
+                "Failed to initialize MultiAgentPromptTemplate",
+                exc_info=True,
+                extra={
+                    "error_type" : type(e).__name__,
+                    "error_message" : str(e)
+                }
+            )
+            raise
+               
+
+    def get_multiagent_chat_template(self) -> Optional[ChatPromptTemplate]:
+
+        """
+        Returns:
+            Optional[ChatPromptTemplate]: The compiled chat prompt template for multi-agent interaction.
+        """
+
+        try:
+            prompt = self.prompt
+            return prompt
+        except Exception as e:
+            logger.error(
+                "Failed to initialize MultiAgentPromptTemplate",
+                exc_info=True,
+                extra={
+                    "error_type" : type(e).__name__,
+                    "error_message" : str(e)
+                }
+            )
+            raise
+   
+
+class CreateMultiAgentSystem:
+
+    """
+    Class to build and return a fully functional multi-agent system using
+    document RAG + CSV analysis with shared memory.
+    """
+    
+    def __init__(
+            self,
+            dir_path: str,
+            document_loader: LoadUnstructuredDocxFile,
+            text_spliter: ApplyCharacterTextSplitter,
+            embeddings: CreateVectorEmbeddings
+
+    ):
+        
+        """
+        Initializes the system with document and embedding configuration.
+
+        Args:
+            dir_path (str): Path to the document folder.
+            document_loader (LoadUnstructuredDocxFile): Loader class to extract documents.
+            text_spliter (ApplyCharacterTextSplitter): Splits documents into chunks.
+            embeddings (CreateVectorEmbeddings): Embedding model interface.
+        """
+        
+        try:
+            self.document_loader = document_loader
+            self.dir_path = dir_path
+            self.texts = text_spliter
+            self.embedding = embeddings
+            self.shared_memory = CreateSharedMemoryBuffer(
+                memory_key="chat_history",
+                return_messages=True,
+                output_key="output"
+            )
+            
+        except Exception as e:
+            logger.error(
+                "Failed to initialize CreateMultiAgentSystem",
+                exc_info=True,
+                extra={
+                    "error_type" : type(e).__name__,
+                    "error_message" : str(e)
+                }
+            )
+            raise
+
+
+    def Setup_Agent_Executor_and_tools(self, df_path: str) -> AgentExecutor:
+
+        """
+        Constructs the multi-agent system and returns an AgentExecutor.
+
+        Args:
+            csv_dataframes (Dict[str, pd.DataFrame]): Dictionary of loaded CSVs.
+
+        Returns:
+            AgentExecutor: Fully wired LangChain multi-agent executor with memory.
+        """
+
+        try:
+            document = self.document_loader.Unstructured_Docx_FileLoader(
+                dir_path=self.dir_path
+            )
+
+            text = self.texts.apply_text_spliter(
+                documents=document
+            )
+
+            embeddings = self.embedding.Create_Embeddings()
+
+            rag_pipeline = DocumentDocxRetrievalQAPipeline(
+                text=text,
+                embeddings=embeddings,
+                persist_directory="chroma-store",
+                collection_name="ml_docs",
+                groq_model="llama-3.3-70b-versatile",
+                search_type="similarity",
+                chain_type="stuff",
+                search_kwargs={"k": 3},
+                return_source_documents=True,
+                input_key="question"
+            )
+
+            rag_chain = rag_pipeline.get_retrieval_QA()
+            
+
+            rag_tool = Tool(
+                name="RAGTool",
+                func=lambda x: rag_chain({"question": x})["result"],
+                description="Answer questions using document knowledge base."
+            )
+            df = pd.read_csv(df_path)
+
+            # Fixed: Create REPL tool with proper locals
+            python_tool = PythonAstREPLTool(locals={'df':df})
+
+            
+            analysis_tool = Tool(
+                name="DataAnalysisTool",
+                func=python_tool.run,
+                description="Useful for answering questions about the pandas DataFrame `df` and Analysis. Input should be valid Python code."
+            )
+
+            shared_memory = self.shared_memory.Conversation_Buffer_Memory()
+
+            tools = [rag_tool, analysis_tool]
+
+            llm = ChatGroq(
+                model="llama-3.3-70b-versatile",
+                temperature=0.7,
+                max_tokens=500
+            )
+
+            prompts = MultiAgentPromptTemplate().get_multiagent_chat_template()
+
+            create_agent = create_tool_calling_agent(
+                llm=llm,
+                tools=tools,
+                prompt=prompts
+            )
+
+            return AgentExecutor(
+                agent=create_agent,
+                tools=tools,
+                memory=shared_memory,
+                verbose=True,
+                handle_parsing_errors=True,
+                return_intermediate_steps=True
+            )
+
+
+
+        except Exception as e:
+            logger.error(
+                "Failed to initialize Setup_Agent_Executor_and_tools",
+                exc_info=True,
+                extra={
+                    "error_type" : type(e).__name__,
+                    "error_message" : str(e)
+                }
+            )
+            raise
+
+
+        
+       
