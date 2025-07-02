@@ -10,7 +10,8 @@ from langchain.agents import (
     create_tool_calling_agent,
     Tool
 )
-
+from langchain_core.tools import tool
+from langchain_experimental.agents import create_pandas_dataframe_agent
 from langchain.agents.agent_types import AgentType
 from langchain_experimental.tools.python.tool import PythonAstREPLTool
 from langchain_groq import ChatGroq
@@ -36,7 +37,11 @@ import logging
 from dotenv import load_dotenv
 import seaborn as sns 
 import matplotlib.pyplot as plt
-
+import plotly.graph_objects as go
+import plotly.io as pio
+import plotly.express as px
+import sklearn
+from IPython.display import display
 import warnings 
 warnings.filterwarnings('ignore')
 
@@ -343,7 +348,7 @@ class DocumentDocxRetrievalQAPipeline:
         try:
             self.Groq_model = ChatGroq(
             model=groq_model,
-            temperature=0.7,
+            temperature=0.3,
             max_tokens=500
             )
         
@@ -490,52 +495,82 @@ class MultiAgentPromptTemplate:
     """
 
     def __init__(self):
-
+        
         """
         Initializes the multi-agent chat prompt with system instructions and message placeholders.
         """
-
         try:
             self.prompt = ChatPromptTemplate.from_messages([
-                ("system", "You are a multi-agent assistant. Use RAGTool for document-based questions. \n"
-                "Use DataAnalysisTool for access to a pandas DataFrame, data analysis, data engineering and preprocessing and machine learning."),
+                (
+                    "system",
+                    """You are a Coordinator Agent managing two tools:
+1. RAGTool - Answers questions using documents.
+2. DataAnalysisTool - Executes Python code to analyze a pandas DataFrame preloaded as `df`.
+
+🧠 Guidelines:
+- You MUST use the DataAnalysisTool to compute all outputs from the DataFrame.
+- NEVER guess or hallucinate any values — only analyze `df` using real code (e.g., df.shape, df.describe(), groupby, etc).
+- Use `print(...)` to output analysis results.
+- For visualizations, use `display(fig)` with seaborn or plotly.
+- Python variables persist between calls.
+
+📝 Special Instructions for summaries:
+If asked to "analyze and explain" or "summarize in 100 words":
+→ FIRST call DataAnalysisTool to analyze `df` (e.g., print(df.describe()), print(df.info()), or groupby stats).
+→ THEN summarize the findings in ~100 words using real observed values.
+
+📌 Example:
+User: Analyze the DataFrame and write a brief 100-word report.
+
+Assistant:
+<tool_call>DataAnalysisTool{{"input_str": "print(df.describe()); print(df.info())"}}</tool_call>
+[Then write the summary based on what you saw.]
+
+Start your reasoning using tools. Do not skip the Python step.
+"""
+                ),
                 MessagesPlaceholder(variable_name="chat_history"),
                 ("human", "{input}"),
-                MessagesPlaceholder(variable_name="agent_scratchpad")
+                MessagesPlaceholder(variable_name="agent_scratchpad"),
             ])
         except Exception as e:
             logger.error(
                 "Failed to initialize MultiAgentPromptTemplate",
                 exc_info=True,
                 extra={
-                    "error_type" : type(e).__name__,
-                    "error_message" : str(e)
+                    "error_type": type(e).__name__,
+                    "error_message": str(e)
                 }
             )
             raise
-               
 
     def get_multiagent_chat_template(self) -> Optional[ChatPromptTemplate]:
-
         """
         Returns:
             Optional[ChatPromptTemplate]: The compiled chat prompt template for multi-agent interaction.
         """
-
         try:
-            prompt = self.prompt
-            return prompt
+            return self.prompt
         except Exception as e:
             logger.error(
-                "Failed to initialize MultiAgentPromptTemplate",
+                "Failed to return prompt from MultiAgentPromptTemplate",
                 exc_info=True,
                 extra={
-                    "error_type" : type(e).__name__,
-                    "error_message" : str(e)
+                    "error_type": type(e).__name__,
+                    "error_message": str(e)
                 }
             )
             raise
-   
+
+
+plotly_figures = []
+
+def display(fig):
+    plotly_figures.append(fig)
+    return fig
+
+import builtins
+builtins.display = display   
 
 class CreateMultiAgentSystem:
 
@@ -614,7 +649,7 @@ class CreateMultiAgentSystem:
                 embeddings=embeddings,
                 persist_directory="chroma-store",
                 collection_name="ml_docs",
-                groq_model="llama-3.3-70b-versatile",
+                groq_model="llama3-70b-8192",
                 search_type="similarity",
                 chain_type="stuff",
                 search_kwargs={"k": 3},
@@ -630,80 +665,60 @@ class CreateMultiAgentSystem:
                 func=lambda x: rag_chain({"question": x})["result"],
                 description="Answer questions using document knowledge base."
             )
+
+    
             df = pd.read_csv(df_path)
 
-            # Fixed: Create REPL tool with proper locals
-            python_tool = PythonAstREPLTool(locals={'df': df})
+       
+            python_repl = PythonAstREPLTool()
+            python_repl.name = "python_repl_ast"
+            python_repl.description = (
+                "Executes Python code for data analysis with these constraints:\n"
+                "1. ONLY use pandas, sklearn, and plotly\n"
+                "2. Data is pre-loaded as df\n"
+                "3. Use display(fig) to store or view plots\n"
+                "4. Use print() to show outputs\n"
+                "5. Variables persist between executions"
+            )
+            python_repl.locals.update({
+                "df": df,
+                "pd": pd,
+                "sklearn": sklearn,
+                "px": px,
+                "go": go,
+                "display": display
+            })
 
-            def run_and_return_output_or_plot(code: str):
-                try:
-                    local_vars = {'df': df, 'plt': plt}
-                    result = None
+         
+            df_llm = ChatGroq(model="llama3-70b-8192", temperature=0.3)
 
-                    # --- Capture print output ---
-                    output_buffer = io.StringIO()
-                    with contextlib.redirect_stdout(output_buffer):
-                        # Try to eval first (for expressions like df.describe())
-                        if "\n" not in code and not code.strip().endswith(";") and not code.strip().startswith("print"):
-                            result = eval(code, {}, local_vars)
-                            if result is not None:
-                                print(result)
-                        else:
-                            exec(code, {}, local_vars)
-
-                    stdout_output = output_buffer.getvalue()
-
-                    # --- Check for plot ---
-                    fig = plt.gcf()
-                    if fig.get_axes():
-                        filename = f"plot_{uuid.uuid4().hex[:8]}.png"
-                        plot_dir = os.path.join("backend", "plots")
-                        os.makedirs(plot_dir, exist_ok=True)
-                        filepath = os.path.join(plot_dir, filename)
-                        plt.savefig(filepath)
-                        plt.close(fig)
-                        return f"📊 Plot saved at: {filepath}\n\n📝 Insights:\n{stdout_output.strip()}"
-
-                    # --- No plot, only insights ---
-                    if stdout_output.strip():
-                        return f"📝 Insights:\n{stdout_output.strip()}"
-
-                    return "✅ Code ran successfully, but no output or plot returned."
-
-                except Exception as e:
-                    return f"❌ Error while running code: {e}"   
-
-            
-            analysis_tool = Tool.from_function(
-                name="DataAnalysisTool",
-                func=run_and_return_output_or_plot,
-                description=(
-                    "Use this tool to perform data analysis and EDA on the DataFrame `df` using pandas, matplotlib, and seaborn.\n"
-                    "Supports:\n"
-                    "- Plotting: histogram, boxplot, barplot, pie chart, countplot (e.g., df.hist(), df['col'].plot(kind='box'), df.hist(), sns.boxplot(...))\n"
-                    "- Descriptive stats: df.describe(), df.info(), df.skew(), df.isnull().sum(), df.value_counts()\n"
-                    "- Grouping, filtering, sorting, merging, renaming, and missing value handling\n"
-                    "- Correlation analysis: df.corr(), heatmaps\n"
-                    "- Outlier detection using IQR method:\n"
-                    "    Q1 = df['col'].quantile(0.25)\n"
-                    "    Q3 = df['col'].quantile(0.75)\n"
-                    "    IQR = Q3 - Q1\n"
-                    "    outliers = df[(df['col'] < Q1 - 1.5 * IQR) | (df['col'] > Q3 + 1.5 * IQR)]\n"
-                    "- Insight generation: print summaries, trends, patterns in the data\n"
-                    "Input must be valid pandas/matplotlib code. Returns textual insights or saved plot paths."
-                )
+            # ✅ Create Pandas Agent
+            df_agent = create_pandas_dataframe_agent(
+                llm=df_llm,
+                df=df,
+                verbose=True,
+                handle_parsing_errors=True,
+                extra_tools=[python_repl],
+                agent_type="tool-calling",
+                allow_dangerous_code=True
             )
 
+
+            @tool
+            def DataAnalysisTool(input_str: str) -> str:
+                """Use for data analysis, visualization, and modeling on DataFrame df."""
+                return df_agent.invoke({"input": input_str})["output"]
+
+ 
+            tools = [rag_tool, DataAnalysisTool]
+
+    
             shared_memory = self.shared_memory.Conversation_Buffer_Memory()
 
-            tools = [rag_tool, analysis_tool]
 
-            llm = ChatGroq(
-                model="llama-3.3-70b-versatile",
-                temperature=0.7,
-                max_tokens=500
-            )
+            llm = ChatGroq(model="llama3-70b-8192", temperature=0.3, max_tokens=500)
 
+        
             prompts = MultiAgentPromptTemplate().get_multiagent_chat_template()
 
             create_agent = create_tool_calling_agent(
@@ -712,6 +727,7 @@ class CreateMultiAgentSystem:
                 prompt=prompts
             )
 
+          
             return AgentExecutor(
                 agent=create_agent,
                 tools=tools,
