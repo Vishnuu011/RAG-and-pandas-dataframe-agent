@@ -1,5 +1,9 @@
 import pandas as pd 
 import os, sys
+import uuid
+
+import io
+import contextlib
 
 from langchain.agents import (
     AgentExecutor,
@@ -579,7 +583,7 @@ class CreateMultiAgentSystem:
                     "error_message" : str(e)
                 }
             )
-            raise
+            raise 
 
 
     def Setup_Agent_Executor_and_tools(self, df_path: str) -> AgentExecutor:
@@ -629,13 +633,65 @@ class CreateMultiAgentSystem:
             df = pd.read_csv(df_path)
 
             # Fixed: Create REPL tool with proper locals
-            python_tool = PythonAstREPLTool(locals={'df':df})
+            python_tool = PythonAstREPLTool(locals={'df': df})
+
+            def run_and_return_output_or_plot(code: str):
+                try:
+                    local_vars = {'df': df, 'plt': plt}
+                    result = None
+
+                    # --- Capture print output ---
+                    output_buffer = io.StringIO()
+                    with contextlib.redirect_stdout(output_buffer):
+                        # Try to eval first (for expressions like df.describe())
+                        if "\n" not in code and not code.strip().endswith(";") and not code.strip().startswith("print"):
+                            result = eval(code, {}, local_vars)
+                            if result is not None:
+                                print(result)
+                        else:
+                            exec(code, {}, local_vars)
+
+                    stdout_output = output_buffer.getvalue()
+
+                    # --- Check for plot ---
+                    fig = plt.gcf()
+                    if fig.get_axes():
+                        filename = f"plot_{uuid.uuid4().hex[:8]}.png"
+                        plot_dir = os.path.join("backend", "plots")
+                        os.makedirs(plot_dir, exist_ok=True)
+                        filepath = os.path.join(plot_dir, filename)
+                        plt.savefig(filepath)
+                        plt.close(fig)
+                        return f"📊 Plot saved at: {filepath}\n\n📝 Insights:\n{stdout_output.strip()}"
+
+                    # --- No plot, only insights ---
+                    if stdout_output.strip():
+                        return f"📝 Insights:\n{stdout_output.strip()}"
+
+                    return "✅ Code ran successfully, but no output or plot returned."
+
+                except Exception as e:
+                    return f"❌ Error while running code: {e}"   
 
             
-            analysis_tool = Tool(
+            analysis_tool = Tool.from_function(
                 name="DataAnalysisTool",
-                func=python_tool.run,
-                description="Useful for answering questions about the pandas DataFrame `df` and Analysis. Input should be valid Python code."
+                func=run_and_return_output_or_plot,
+                description=(
+                    "Use this tool to perform data analysis and EDA on the DataFrame `df` using pandas, matplotlib, and seaborn.\n"
+                    "Supports:\n"
+                    "- Plotting: histogram, boxplot, barplot, pie chart, countplot (e.g., df.hist(), df['col'].plot(kind='box'), df.hist(), sns.boxplot(...))\n"
+                    "- Descriptive stats: df.describe(), df.info(), df.skew(), df.isnull().sum(), df.value_counts()\n"
+                    "- Grouping, filtering, sorting, merging, renaming, and missing value handling\n"
+                    "- Correlation analysis: df.corr(), heatmaps\n"
+                    "- Outlier detection using IQR method:\n"
+                    "    Q1 = df['col'].quantile(0.25)\n"
+                    "    Q3 = df['col'].quantile(0.75)\n"
+                    "    IQR = Q3 - Q1\n"
+                    "    outliers = df[(df['col'] < Q1 - 1.5 * IQR) | (df['col'] > Q3 + 1.5 * IQR)]\n"
+                    "- Insight generation: print summaries, trends, patterns in the data\n"
+                    "Input must be valid pandas/matplotlib code. Returns textual insights or saved plot paths."
+                )
             )
 
             shared_memory = self.shared_memory.Conversation_Buffer_Memory()
@@ -680,4 +736,5 @@ class CreateMultiAgentSystem:
 
 
         
+
        
